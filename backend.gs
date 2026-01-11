@@ -1,12 +1,15 @@
 
 /**
- * Syifamili Backend - 10 Minute Reminder Logic
- * PENTING: Ganti URL VERCEL_PUSH_API_URL setelah deploy Vercel selesai.
+ * Syifamili Backend - Full Version (Auto-Create Sheets + Notif + Drive Upload)
  */
 
-// LANGKAH TERAKHIR: GANTI INI DENGAN URL VERCEL ANDA
-// Contoh: 'https://syifamili-app.vercel.app/api/send-push'
+// 1. CONFIG URL VERCEL (Untuk Notifikasi)
+// Ganti dengan domain Vercel Anda, misal: https://syifamili.vercel.app/api/send-push
 const VERCEL_PUSH_API_URL = 'https://GANTI_DENGAN_DOMAIN_VERCEL_ANDA/api/send-push'; 
+
+// 2. CONFIG GOOGLE DRIVE FOLDER ID (Untuk Upload File)
+// Ambil ID dari URL folder Google Drive Anda
+const UPLOAD_FOLDER_ID = 'GANTI_DENGAN_ID_FOLDER_GOOGLE_DRIVE_ANDA'; 
 
 const DATABASE_SCHEMA = {
   'members': ['id', 'name', 'relation', 'gender', 'birthDate', 'bloodType', 'photoUrl', 'isElderly', 'isChild', 'nik', 'insurances', 'allergies', 'aiGrowthAnalysis', 'aiImmunizationAnalysis', 'aiDevelopmentAnalysis', 'developmentChecklist', 'immunizationChecklist'],
@@ -26,10 +29,23 @@ const DATABASE_SCHEMA = {
 function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const result = {};
+  
+  // 1. CEK & BUAT SEMUA SHEET JIKA BELUM ADA (Termasuk subscriptions)
+  Object.keys(DATABASE_SCHEMA).forEach(sheetName => {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) { 
+      sheet = ss.insertSheet(sheetName); 
+      sheet.appendRow(DATABASE_SCHEMA[sheetName]);
+    }
+  });
+
+  // 2. BACA DATA (Skip subscriptions agar tidak terekspos ke frontend)
   Object.keys(DATABASE_SCHEMA).forEach(sheetName => {
     if (sheetName === 'subscriptions') return;
     let sheet = ss.getSheetByName(sheetName);
+    // Double check if sheet exists (it should now)
     if (!sheet) { result[sheetName] = []; return; }
+    
     const values = sheet.getDataRange().getDisplayValues(); 
     if (values.length <= 1) { result[sheetName] = []; return; }
     const headers = values[0];
@@ -53,17 +69,22 @@ function doPost(e) {
       const request = JSON.parse(e.postData.contents);
       const ss = SpreadsheetApp.getActiveSpreadsheet();
       
+      // --- LOGIKA SAVE SUBSCRIPTION ---
       if (request.action === 'saveSubscription') {
         const sub = request.subscription;
         let sheet = ss.getSheetByName('subscriptions');
+        // Buat sheet jika belum ada (redundant but safe)
         if (!sheet) { sheet = ss.insertSheet('subscriptions'); sheet.appendRow(DATABASE_SCHEMA['subscriptions']); }
+        
         const data = sheet.getDataRange().getValues();
+        // Cek duplikat endpoint
         if (!data.some(row => row[0] === sub.endpoint)) {
           sheet.appendRow([sub.endpoint, sub.keys.p256dh, sub.keys.auth, request.userAgent, new Date().toISOString()]);
         }
         return ContentService.createTextOutput(JSON.stringify({ status: 'success' })).setMimeType(ContentService.MimeType.JSON);
       }
 
+      // --- LOGIKA SAVE ALL DATA ---
       if (request.action === 'saveAll') {
         const payload = request.payload;
         Object.keys(DATABASE_SCHEMA).forEach(sheetName => {
@@ -87,9 +108,34 @@ function doPost(e) {
         return ContentService.createTextOutput(JSON.stringify({ status: 'success' })).setMimeType(ContentService.MimeType.JSON);
       }
       
+      // --- LOGIKA UPLOAD FILE KE GOOGLE DRIVE ---
       if (request.action === 'upload') {
-        // Simple upload handler placeholder (requires Drive API setup usually)
-        return ContentService.createTextOutput(JSON.stringify({ status: 'success', url: 'https://via.placeholder.com/150' })).setMimeType(ContentService.MimeType.JSON);
+        try {
+          let folder;
+          if (UPLOAD_FOLDER_ID && !UPLOAD_FOLDER_ID.includes('GANTI')) {
+             folder = DriveApp.getFolderById(UPLOAD_FOLDER_ID);
+          } else {
+             folder = DriveApp.getRootFolder(); // Fallback ke Root jika ID belum diisi
+          }
+
+          const data = Utilities.base64Decode(request.base64);
+          const blob = Utilities.newBlob(data, request.mimeType, request.fileName);
+          const file = folder.createFile(blob);
+          
+          file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          
+          const fileId = file.getId();
+          const directUrl = "https://drive.google.com/uc?export=view&id=" + fileId;
+          
+          return ContentService.createTextOutput(JSON.stringify({ 
+            status: 'success', 
+            url: directUrl,
+            fileId: fileId
+          })).setMimeType(ContentService.MimeType.JSON);
+
+        } catch (uploadError) {
+          return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: uploadError.toString() })).setMimeType(ContentService.MimeType.JSON);
+        }
       }
     }
   } catch (err) {
@@ -106,18 +152,13 @@ function checkReminders() {
   const now = new Date();
   
   // Target = Waktu Sekarang + 10 Menit.
-  // Jika Jadwal Obat jam 10:00. Script jalan jam 09:50.
-  // 09:50 + 10 menit = 10:00. (COCOK -> KIRIM NOTIF)
   const targetTime = new Date(now.getTime() + (10 * 60 * 1000)); 
-  const targetString = Utilities.formatDate(targetTime, "GMT+7", "yyyy-MM-dd HH:mm"); // Format sampai menit
+  const targetString = Utilities.formatDate(targetTime, "GMT+7", "yyyy-MM-dd HH:mm");
   
   // 1. Cek Pengingat Obat (meds)
   const medSheet = ss.getSheetByName('meds');
   if (medSheet) {
-    const data = medSheet.getDataRange().getDisplayValues(); // Ambil semua data sebagai string
-    // Index Kolom (Berdasarkan Schema di atas):
-    // 0:id, 1:memberId, 2:name, 3:dosage, 4:freq, 5:instruct, 6:nextTime, 7:active
-    
+    const data = medSheet.getDataRange().getDisplayValues();
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
       const nextTimeStr = row[6]; 
@@ -127,7 +168,6 @@ function checkReminders() {
         const scheduleDate = new Date(nextTimeStr);
         const scheduleString = Utilities.formatDate(scheduleDate, "GMT+7", "yyyy-MM-dd HH:mm");
         
-        // Cek apakah jadwal obat == (sekarang + 10 menit)
         if (scheduleString === targetString) {
           sendPushBroadcast({
             title: "Pengingat Obat 💊",
@@ -143,18 +183,13 @@ function checkReminders() {
   const apptSheet = ss.getSheetByName('appointments');
   if (apptSheet) {
     const data = apptSheet.getDataRange().getDisplayValues();
-    // Index Kolom:
-    // 0:id, 1:memberId, 2:title, 3:dateTime, 4:doctor, 5:location
-    
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
       const dateStr = row[3];
-      
       if (dateStr) {
         const scheduleDate = new Date(dateStr);
         const scheduleString = Utilities.formatDate(scheduleDate, "GMT+7", "yyyy-MM-dd HH:mm");
 
-        // Cek apakah jadwal kontrol == (sekarang + 10 menit)
         if (scheduleString === targetString) {
           sendPushBroadcast({
             title: "Jadwal Kontrol 🏥",
@@ -168,14 +203,14 @@ function checkReminders() {
 }
 
 function sendPushBroadcast(payload) {
-  if (VERCEL_PUSH_API_URL.includes('GANTI_DENGAN')) return; // Belum disetting
+  if (VERCEL_PUSH_API_URL.includes('GANTI_DENGAN')) return;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const subSheet = ss.getSheetByName('subscriptions');
   if (!subSheet) return;
 
   const data = subSheet.getDataRange().getValues();
-  // Loop semua subscriber (mulai baris 2)
+  // Loop semua subscriber
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
     const endpoint = row[0];

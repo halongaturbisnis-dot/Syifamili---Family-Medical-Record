@@ -66,14 +66,10 @@ const Layout: React.FC<LayoutProps> = ({
     { id: 'contacts', label: t.contacts, icon: PhoneCall },
   ];
 
-  useEffect(() => {
-    // Register SW on load
-    notificationService.registerServiceWorker();
-  }, []);
-
-  const handleSubscribe = async () => {
-    if (notifPermission === 'denied') {
-      alert('Izin notifikasi ditolak. Mohon aktifkan di pengaturan browser.');
+  // Logic untuk subscribe
+  const handleSubscribe = async (silent = false) => {
+    if (Notification.permission === 'denied') {
+      if (!silent) alert('Izin notifikasi ditolak. Mohon aktifkan di pengaturan browser.');
       return;
     }
     
@@ -83,11 +79,25 @@ const Layout: React.FC<LayoutProps> = ({
     
     if (res.success) {
       setNotifPermission('granted');
-      alert('Notifikasi aktif! Anda akan menerima update di perangkat ini.');
+      if (!silent) alert('Notifikasi aktif! Anda akan menerima update di perangkat ini.');
     } else {
-      // alert('Gagal mengaktifkan notifikasi: ' + res.message); // Silent fail is better for UX sometimes
+      console.warn("Auto-subscribe failed:", res.message);
     }
   };
+
+  useEffect(() => {
+    const initNotifications = async () => {
+      // 1. Register SW
+      await notificationService.registerServiceWorker();
+      
+      // 2. Auto Request Permission jika masih default (belum pernah ditanya)
+      if (Notification.permission === 'default') {
+        // Mencoba memicu prompt bawaan browser
+        handleSubscribe(true); // true = silent mode (no alert on success)
+      }
+    };
+    initNotifications();
+  }, []);
 
   const handleMoreAppsClick = async () => {
     setLoadingLink(true);
@@ -223,7 +233,7 @@ const Layout: React.FC<LayoutProps> = ({
             
             <div className="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 gap-1">
               <button 
-                onClick={handleSubscribe}
+                onClick={() => handleSubscribe(false)}
                 disabled={notifPermission === 'granted' || isSubscribing}
                 className={`p-2 rounded-lg transition-all group ${
                   notifPermission === 'granted' 
