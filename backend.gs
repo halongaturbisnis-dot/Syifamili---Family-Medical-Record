@@ -30,6 +30,20 @@ function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const result = {};
   
+  // Fitur Test Notifikasi Manual via Browser (panggil URL exec dengan ?test=true)
+  if (e.parameter.test === 'true') {
+     try {
+       sendPushBroadcast({
+         title: "Test Notifikasi Syifamili 🔔",
+         body: "Jika Anda melihat ini, koneksi Backend ke HP berhasil!",
+         url: "/"
+       });
+       return ContentService.createTextOutput(JSON.stringify({ status: 'success', message: 'Test notification sent' })).setMimeType(ContentService.MimeType.JSON);
+     } catch (err) {
+       return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+     }
+  }
+
   // 1. CEK & BUAT SEMUA SHEET JIKA BELUM ADA (Termasuk subscriptions)
   Object.keys(DATABASE_SCHEMA).forEach(sheetName => {
     let sheet = ss.getSheetByName(sheetName);
@@ -43,7 +57,6 @@ function doGet(e) {
   Object.keys(DATABASE_SCHEMA).forEach(sheetName => {
     if (sheetName === 'subscriptions') return;
     let sheet = ss.getSheetByName(sheetName);
-    // Double check if sheet exists (it should now)
     if (!sheet) { result[sheetName] = []; return; }
     
     const values = sheet.getDataRange().getDisplayValues(); 
@@ -72,12 +85,14 @@ function doPost(e) {
       // --- LOGIKA SAVE SUBSCRIPTION ---
       if (request.action === 'saveSubscription') {
         const sub = request.subscription;
+        if (!sub || !sub.endpoint || !sub.keys) {
+           return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: 'Invalid subscription data' })).setMimeType(ContentService.MimeType.JSON);
+        }
+
         let sheet = ss.getSheetByName('subscriptions');
-        // Buat sheet jika belum ada (redundant but safe)
         if (!sheet) { sheet = ss.insertSheet('subscriptions'); sheet.appendRow(DATABASE_SCHEMA['subscriptions']); }
         
         const data = sheet.getDataRange().getValues();
-        // Cek duplikat endpoint
         if (!data.some(row => row[0] === sub.endpoint)) {
           sheet.appendRow([sub.endpoint, sub.keys.p256dh, sub.keys.auth, request.userAgent, new Date().toISOString()]);
         }
@@ -115,13 +130,12 @@ function doPost(e) {
           if (UPLOAD_FOLDER_ID && !UPLOAD_FOLDER_ID.includes('GANTI')) {
              folder = DriveApp.getFolderById(UPLOAD_FOLDER_ID);
           } else {
-             folder = DriveApp.getRootFolder(); // Fallback ke Root jika ID belum diisi
+             folder = DriveApp.getRootFolder(); 
           }
 
           const data = Utilities.base64Decode(request.base64);
           const blob = Utilities.newBlob(data, request.mimeType, request.fileName);
           const file = folder.createFile(blob);
-          
           file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
           
           const fileId = file.getId();
@@ -149,30 +163,40 @@ function doPost(e) {
  */
 function checkReminders() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  // Gunakan Timezone Spreadsheet, bukan hardcoded GMT+7 agar sinkron dengan input user
+  const timeZone = ss.getSpreadsheetTimeZone(); 
   const now = new Date();
   
   // Target = Waktu Sekarang + 10 Menit.
   const targetTime = new Date(now.getTime() + (10 * 60 * 1000)); 
-  const targetString = Utilities.formatDate(targetTime, "GMT+7", "yyyy-MM-dd HH:mm");
+  const targetString = Utilities.formatDate(targetTime, timeZone, "yyyy-MM-dd HH:mm");
   
+  Logger.log("Checking reminders for time: " + targetString); 
+
   // 1. Cek Pengingat Obat (meds)
   const medSheet = ss.getSheetByName('meds');
   if (medSheet) {
     const data = medSheet.getDataRange().getDisplayValues();
+    // Start from row 1 (skip header)
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
+      // Column Mapping based on Schema:
+      // 0:id, 1:memberId, 2:name, 3:dosage, 4:freq, 5:instruct, 6:nextTime, 7:active
+      const medId = row[0];
+      const memberId = row[1];
       const nextTimeStr = row[6]; 
-      const isActive = row[7] === 'TRUE' || row[7] === 'true';
+      const isActive = row[7] === 'TRUE' || row[7] === 'true'; 
       
       if (isActive && nextTimeStr) {
         const scheduleDate = new Date(nextTimeStr);
-        const scheduleString = Utilities.formatDate(scheduleDate, "GMT+7", "yyyy-MM-dd HH:mm");
+        const scheduleString = Utilities.formatDate(scheduleDate, timeZone, "yyyy-MM-dd HH:mm");
         
         if (scheduleString === targetString) {
           sendPushBroadcast({
             title: "Pengingat Obat 💊",
-            body: `10 Menit lagi waktunya minum: ${row[2]} (${row[3]}).`,
-            url: "/?tab=meds"
+            body: `10 Menit lagi waktunya minum: ${row[2]} (${row[3]}).`, 
+            // URL dengan parameter untuk Direct Link
+            url: `/?tab=meds&id=${medId}&memberId=${memberId}`
           });
         }
       }
@@ -185,16 +209,20 @@ function checkReminders() {
     const data = apptSheet.getDataRange().getDisplayValues();
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      const dateStr = row[3];
+      // Column Mapping: 0:id, 1:memberId, 2:title, 3:dateTime
+      const apptId = row[0];
+      const memberId = row[1];
+      const dateStr = row[3]; 
       if (dateStr) {
         const scheduleDate = new Date(dateStr);
-        const scheduleString = Utilities.formatDate(scheduleDate, "GMT+7", "yyyy-MM-dd HH:mm");
+        const scheduleString = Utilities.formatDate(scheduleDate, timeZone, "yyyy-MM-dd HH:mm");
 
         if (scheduleString === targetString) {
           sendPushBroadcast({
             title: "Jadwal Kontrol 🏥",
             body: `10 Menit lagi: ${row[2]} di ${row[5]}. Jangan lupa dokumen Anda.`,
-            url: "/?tab=schedule"
+            // URL dengan parameter untuk Direct Link
+            url: `/?tab=schedule&id=${apptId}&memberId=${memberId}`
           });
         }
       }
@@ -203,14 +231,16 @@ function checkReminders() {
 }
 
 function sendPushBroadcast(payload) {
-  if (VERCEL_PUSH_API_URL.includes('GANTI_DENGAN')) return;
+  if (VERCEL_PUSH_API_URL.includes('GANTI_DENGAN')) {
+    Logger.log("ERROR: URL Vercel belum diset di backend.gs");
+    return;
+  }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const subSheet = ss.getSheetByName('subscriptions');
   if (!subSheet) return;
 
   const data = subSheet.getDataRange().getValues();
-  // Loop semua subscriber
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
     const endpoint = row[0];

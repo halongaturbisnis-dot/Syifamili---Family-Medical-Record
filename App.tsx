@@ -100,6 +100,7 @@ const App: React.FC = () => {
     }
   };
 
+  // Initial Load
   useEffect(() => { 
     handleCloudFetch();
     
@@ -110,6 +111,37 @@ const App: React.FC = () => {
     };
     loadBanner();
   }, [handleCloudFetch]);
+
+  // Deep Linking Logic (Runs after data is loaded)
+  useEffect(() => {
+    if (!isLoading && members.length > 0) {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get('tab');
+      const idParam = params.get('id');
+      const memberIdParam = params.get('memberId');
+
+      if (tabParam) {
+        // Switch to correct member first if provided
+        if (memberIdParam) {
+          const memberExists = members.find(m => m.id === memberIdParam);
+          if (memberExists) {
+            setSelectedMemberId(memberIdParam);
+          }
+        }
+
+        // Set target Item ID to open detail view
+        if (idParam) {
+          setInitialOpenId(idParam);
+        }
+
+        // Switch Tab
+        setActiveTab(tabParam);
+        
+        // Clean URL to prevent re-opening on soft refresh (optional)
+        // window.history.replaceState({}, '', '/');
+      }
+    }
+  }, [isLoading, members]);
 
   const onNavigateToDetail = (tab: string, memberId: string, itemId: string, subId?: string) => {
     setSelectedMemberId(memberId);
