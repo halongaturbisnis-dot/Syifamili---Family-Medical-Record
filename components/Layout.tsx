@@ -21,7 +21,8 @@ import {
   Loader2,
   Handshake,
   Bell,
-  BellRing
+  BellRing,
+  Smartphone
 } from 'lucide-react';
 import { Language } from '../types';
 import { useTranslation } from '../translations';
@@ -66,38 +67,56 @@ const Layout: React.FC<LayoutProps> = ({
     { id: 'contacts', label: t.contacts, icon: PhoneCall },
   ];
 
-  // Logic untuk subscribe
-  const handleSubscribe = async (silent = false) => {
+  useEffect(() => {
+    // Hanya register SW, JANGAN auto-subscribe (iOS butuh klik manual)
+    notificationService.registerServiceWorker();
+  }, []);
+
+  const handleSubscribeClick = async () => {
+    // 1. Cek Permission Awal
     if (Notification.permission === 'denied') {
-      if (!silent) alert('Izin notifikasi ditolak. Mohon aktifkan di pengaturan browser.');
+      alert('Izin notifikasi diblokir browser. Mohon reset izin di pengaturan browser/HP Anda.');
       return;
     }
-    
+
     setIsSubscribing(true);
-    const res = await notificationService.subscribeUser();
-    setIsSubscribing(false);
-    
-    if (res.success) {
-      setNotifPermission('granted');
-      if (!silent) alert('Notifikasi aktif! Anda akan menerima update di perangkat ini.');
-    } else {
-      console.warn("Auto-subscribe failed:", res.message);
+
+    try {
+      // 2. Request Permission Explicitly (Wajib untuk iOS)
+      const permission = await Notification.requestPermission();
+      setNotifPermission(permission);
+
+      if (permission === 'granted') {
+        // 3. Lakukan Subscribe ke Server
+        const res = await notificationService.subscribeUser();
+        if (res.success) {
+          alert('Berhasil! Notifikasi aktif untuk perangkat ini.');
+        } else {
+          alert('Gagal menyimpan langganan: ' + res.message);
+        }
+      } else {
+        alert('Izin notifikasi tidak diberikan.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Terjadi kesalahan saat mengaktifkan notifikasi.');
+    } finally {
+      setIsSubscribing(false);
     }
   };
 
-  useEffect(() => {
-    const initNotifications = async () => {
-      // 1. Register SW
-      await notificationService.registerServiceWorker();
-      
-      // 2. Auto Request Permission jika masih default (belum pernah ditanya)
-      if (Notification.permission === 'default') {
-        // Mencoba memicu prompt bawaan browser
-        handleSubscribe(true); // true = silent mode (no alert on success)
-      }
-    };
-    initNotifications();
-  }, []);
+  const handleLocalTest = async () => {
+    if (Notification.permission !== 'granted') {
+      alert('Mohon aktifkan notifikasi (ikon lonceng) terlebih dahulu.');
+      return;
+    }
+    
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'TEST_NOTIFICATION' });
+    } else {
+      alert('Service Worker belum siap. Coba refresh halaman.');
+    }
+  };
 
   const handleMoreAppsClick = async () => {
     setLoadingLink(true);
@@ -212,7 +231,7 @@ const Layout: React.FC<LayoutProps> = ({
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shrink-0">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 lg:px-8 shrink-0">
           <h2 className="text-lg font-bold text-slate-800 capitalize tracking-tight">
             {navItems.find(i => i.id === activeTab)?.label || activeTab}
           </h2>
@@ -233,12 +252,12 @@ const Layout: React.FC<LayoutProps> = ({
             
             <div className="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 gap-1">
               <button 
-                onClick={() => handleSubscribe(false)}
-                disabled={notifPermission === 'granted' || isSubscribing}
+                onClick={handleSubscribeClick}
+                disabled={isSubscribing}
                 className={`p-2 rounded-lg transition-all group ${
                   notifPermission === 'granted' 
                     ? 'text-emerald-600 bg-white shadow-sm' 
-                    : 'text-slate-500 hover:text-blue-600 hover:bg-white'
+                    : 'text-slate-500 hover:text-blue-600 hover:bg-white animate-pulse'
                 }`}
                 title={notifPermission === 'granted' ? "Notifikasi Aktif" : "Aktifkan Notifikasi"}
               >
@@ -249,6 +268,14 @@ const Layout: React.FC<LayoutProps> = ({
                 ) : (
                   <Bell size={18} className="group-hover:animate-swing" />
                 )}
+              </button>
+
+              <button 
+                onClick={handleLocalTest}
+                className="p-2 text-slate-500 hover:text-purple-600 hover:bg-white rounded-lg transition-all"
+                title="Test Notifikasi di HP Ini"
+              >
+                <Smartphone size={18} />
               </button>
 
               <div className="w-px h-6 bg-slate-200 mx-1"></div>

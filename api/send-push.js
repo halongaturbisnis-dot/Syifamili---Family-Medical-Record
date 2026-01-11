@@ -43,7 +43,16 @@ export default async function handler(req, res) {
   );
 
   try {
-    await webpush.sendNotification(subscription, JSON.stringify(payload));
+    // KONFIGURASI PENTING UNTUK IOS & BACKGROUND DELIVERY
+    const options = {
+      headers: {
+        'Urgency': 'high', // WAJIB untuk iOS agar muncul saat layar mati/app tutup
+        'Topic': 'medical-record' // Opsional, membantu kategorisasi
+      },
+      TTL: 60 * 60 * 24 // Time to Live: 24 Jam (jika HP mati, simpan pesan selama 24 jam)
+    };
+
+    await webpush.sendNotification(subscription, JSON.stringify(payload), options);
     res.status(200).json({ success: true });
   } catch (error) {
     console.error('Error sending push:', error);
